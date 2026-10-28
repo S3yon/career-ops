@@ -4,7 +4,7 @@ import * as yaml from "js-yaml";
 import { atomicWrite } from "@/lib/core/safe-write";
 import { resolveDataRoot } from "@/lib/core/data-root.mjs";
 import { getProfilePath } from "@/lib/core/profile-path.mjs";
-import { readTrackerFile } from "@/lib/core/tracker-files.mjs";
+import { readTrackerFile, trackerLinkDirs } from "@/lib/core/tracker-files.mjs";
 import { resolveCodeRoot, resolveRootScript } from "@/lib/core/code-root.mjs";
 import { parseApplications } from "@/lib/tracker-table.mjs";
 import { parseStatusLog } from "@/lib/pipeline-sankey.mjs";
@@ -409,25 +409,27 @@ export function findReportFile(n: string): string | null {
   return containedRealpath(p, root) ? p : null;
 }
 
-/** The path a tracker row's own Report link names, or null when the cell has
- *  no link or the link is not a non-reserved `.md`. `readTarget` picks the
- *  link from the cell. Not checked for containment: callers do that. */
-function linkedReportPath(
+/** The paths a tracker row's own Report link can name, in the order the core
+ *  tries them (tracker-utils.mjs findDeadReportLink): from the tracker's own
+ *  folder (#760), realpathed and then as given (#5374), then from the data
+ *  root for legacy root-relative links. Empty when the cell has no link or the
+ *  link is not a non-reserved `.md`. `readTarget` picks the link from the
+ *  cell. Not checked for containment: callers do that. */
+function linkedReportPaths(
   app: { report?: string } | undefined,
   root: string,
   readTarget: (cell: string | undefined) => string | null = firstMarkdownLinkTarget,
-): string | null {
+): string[] {
   const linked = readTarget(app?.report);
-  if (!linked) return null;
-  const p = path.resolve(root, "data", linked);
-  return p.endsWith(".md") && !isReservedReportFile(p) ? p : null;
+  if (!linked) return [];
+  const paths = [...trackerLinkDirs(root), root].map((dir) => path.resolve(dir, linked));
+  return [...new Set(paths)].filter((p) => p.endsWith(".md") && !isReservedReportFile(p));
 }
 
-/** linkedReportPath, kept only when it resolves inside the project. */
+/** The first of linkedReportPaths that resolves inside the project. */
 function linkedReportFile(app: { report?: string } | undefined, root: string): string | null {
-  const p = linkedReportPath(app, root);
   // Containment: a hand-edited link must not resolve outside the project.
-  return p && containedRealpath(p, root) ? p : null;
+  return linkedReportPaths(app, root).find((p) => containedRealpath(p, root)) ?? null;
 }
 
 /** Text of the report a tracker row links to, or null. The What's New
@@ -443,24 +445,28 @@ function linkedReportFile(app: { report?: string } | undefined, root: string): s
  *  signal. */
 export function readLinkedReport(app: { report?: string }): string | null {
   const root = careerOpsRoot();
-  const file = linkedReportPath(app, root, soleMarkdownLinkTarget);
-  if (!file) return null;
-  try {
-    // containedRealpath's check, inline: it reads every resolution failure as
-    // "not found", and here only ENOENT may. A reports dir without traversal
-    // permission (EACCES) or a symlink loop (ELOOP) is broken, not absent.
-    if (!fs.realpathSync(file).startsWith(fs.realpathSync(root) + path.sep)) return null;
-    // Reports live in the user's runtime checkout, outside the web build graph.
-    return fs.readFileSync(/* turbopackIgnore: true */ file, "utf8");
-  } catch (err) {
-    // Missing, or deleted since it resolved: unknown.
-    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return null;
-    // EISDIR's message names no file, so name it here.
-    throw new Error(
-      `report ${path.relative(root, file)} could not be read: ${(err as Error)?.message ?? "unknown error"}`,
-      { cause: err },
-    );
+  for (const file of linkedReportPaths(app, root, soleMarkdownLinkTarget)) {
+    try {
+      // containedRealpath's check, inline: it reads every resolution failure as
+      // "not found", and here only ENOENT and ENOTDIR may. A reports dir
+      // without traversal permission (EACCES) or a symlink loop (ELOOP) is
+      // broken, not absent.
+      if (!fs.realpathSync(file).startsWith(fs.realpathSync(root) + path.sep)) continue;
+      // Reports live in the user's runtime checkout, outside the web build graph.
+      return fs.readFileSync(/* turbopackIgnore: true */ file, "utf8");
+    } catch (err) {
+      // Not in this folder, or deleted since it resolved: try the next one.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT" || code === "ENOTDIR") continue;
+      // EISDIR's message names no file, so name it here.
+      throw new Error(
+        `report ${path.relative(root, file)} could not be read: ${(err as Error)?.message ?? "unknown error"}`,
+        { cause: err },
+      );
+    }
   }
+  // No link, or no folder holds the report: unknown.
+  return null;
 }
 
 /** True containment check: resolves symlinks before comparing, so a link

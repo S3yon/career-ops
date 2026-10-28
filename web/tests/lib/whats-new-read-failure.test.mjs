@@ -229,6 +229,83 @@ test("a Report cell with two links names no posting, so company + role decides",
   assert.deepEqual(res.body, { offers: [], count: 0 });
 });
 
+// The report links below are relative to the tracker's own folder, as the
+// core reads them (tracker-utils.mjs findDeadReportLink, #760). Each report
+// names a different posting than the scan row with the same title, so the row
+// is shown only when the report is found; a report the web missed reads as
+// "URL unknown", and company + role then hides the row.
+const ACME_REPORT = "# Acme\n\n**URL:** https://boards.greenhouse.io/acme/jobs/1001\n";
+
+function acmeTracker(link) {
+  return [
+    "| # | Date | Company | Role | Score | Status | PDF | Report | Notes |",
+    "|---|---|---|---|---|---|---|---|---|",
+    `| 1 | 2026-10-01 | Acme | Staff Engineer | 4.1/5 | Evaluated | | [1](${link}) | |`,
+  ].join("\n");
+}
+
+function writeAcmeHistory(dir) {
+  const today = new Date().toISOString().slice(0, 10);
+  writeFileSync(
+    join(dir, "data", "scan-history.tsv"),
+    `${HISTORY_HEADER}https://boards.greenhouse.io/acme/jobs/2002\t${today}\tgreenhouse\tStaff Engineer\tAcme\tadded\tRemote\n`,
+  );
+}
+
+test("a CAREER_OPS_TRACKER tracker's report links resolve from its own folder", () => {
+  const root = makeRoot((dir) => {
+    mkdirSync(join(dir, "custom", "reports"), { recursive: true });
+    writeFileSync(join(dir, "custom", "reports", "001-acme.md"), ACME_REPORT);
+    writeFileSync(join(dir, "custom", "applications.md"), acmeTracker("reports/001-acme.md"));
+    writeAcmeHistory(dir);
+  });
+  const res = callRoute(root, { CAREER_OPS_TRACKER: join(root, "custom", "applications.md") });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.count, 1);
+  assert.equal(res.body.offers[0].url, "https://boards.greenhouse.io/acme/jobs/2002");
+});
+
+test("a root-level tracker's report links resolve from the root", () => {
+  const res = callRoute(makeRoot((dir) => {
+    mkdirSync(join(dir, "reports"), { recursive: true });
+    writeFileSync(join(dir, "reports", "001-acme.md"), ACME_REPORT);
+    writeFileSync(join(dir, "applications.md"), acmeTracker("reports/001-acme.md"));
+    writeAcmeHistory(dir);
+  }));
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.count, 1);
+});
+
+test("a symlinked tracker's report links still resolve from the link's folder", (t) => {
+  // data/applications.md linked into a private repo while reports/ stays in
+  // the checkout (#5374): `../reports/` exists only beside the link, not
+  // beside its target, so the target's folder alone would miss it.
+  let linked = true;
+  const root = makeRoot((dir) => {
+    mkdirSync(join(dir, "reports"), { recursive: true });
+    mkdirSync(join(dir, "private", "t"), { recursive: true });
+    writeFileSync(join(dir, "reports", "001-acme.md"), ACME_REPORT);
+    writeFileSync(join(dir, "private", "t", "applications.md"), acmeTracker("../reports/001-acme.md"));
+    try {
+      symlinkSync(join(dir, "private", "t", "applications.md"), join(dir, "data", "applications.md"));
+    } catch (e) {
+      if (e?.code !== "EPERM" || e?.syscall !== "symlink") throw e;
+      linked = false;
+    }
+    writeAcmeHistory(dir);
+  });
+  if (!linked) {
+    t.skip("no symlink privilege (EPERM)");
+    return;
+  }
+  const res = callRoute(root);
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.count, 1);
+});
+
 process.on("exit", () => {
   for (const dir of roots) rmSync(dir, { recursive: true, force: true });
 });
