@@ -15,7 +15,7 @@ import { reconcileInbox } from "@/lib/inbox-pending.mjs";
 // One definition of the `{n}-RESERVED.md` convention, shared with
 // run-cli-support.mjs — see report-files.mjs for why it lives there.
 import { isReservedReportFile } from "@/lib/report-files.mjs";
-import { firstMarkdownLinkTarget } from "@/lib/posting-url.mjs";
+import { firstMarkdownLinkTarget, soleMarkdownLinkTarget } from "@/lib/posting-url.mjs";
 import { resolvePdfIndexPath } from "@/lib/core/pdf-index";
 // Pure parser, no I/O — shared with the apply flow's CV resolver so the two
 // don't drift into two different definitions of "which report does this
@@ -410,10 +410,14 @@ export function findReportFile(n: string): string | null {
 }
 
 /** The path a tracker row's own Report link names, or null when the cell has
- *  no link or the link is not a non-reserved `.md`. Not checked for
- *  containment: callers do that. */
-function linkedReportPath(app: { report?: string } | undefined, root: string): string | null {
-  const linked = firstMarkdownLinkTarget(app?.report);
+ *  no link or the link is not a non-reserved `.md`. `readTarget` picks the
+ *  link from the cell. Not checked for containment: callers do that. */
+function linkedReportPath(
+  app: { report?: string } | undefined,
+  root: string,
+  readTarget: (cell: string | undefined) => string | null = firstMarkdownLinkTarget,
+): string | null {
+  const linked = readTarget(app?.report);
   if (!linked) return null;
   const p = path.resolve(root, "data", linked);
   return p.endsWith(".md") && !isReservedReportFile(p) ? p : null;
@@ -430,13 +434,16 @@ function linkedReportFile(app: { report?: string } | undefined, root: string): s
  *  suppression reads its `**URL:**` (lib/whats-new-suppression.mjs). Link
  *  only, never findReportFile's number fallback: row and report numbers drift
  *  apart (#1733), and a guessed report would hand the row another posting's
- *  URL. Null (no link, or the report is missing) means "URL unknown" there and
- *  falls back to the company + role match. Any other read failure throws: a
- *  report that exists but cannot be read is broken, and reading it as unknown
- *  would hide a second posting with the same title with no signal. */
+ *  URL. For the same reason the cell must be exactly one link, as the core's
+ *  `soleMarkdownLink` asks: with two, which one is the evaluated report is a
+ *  guess. Null (no sole link, or the report is missing) means "URL unknown"
+ *  there and falls back to the company + role match. Any other read failure
+ *  throws: a report that exists but cannot be read is broken, and reading it
+ *  as unknown would hide a second posting with the same title with no
+ *  signal. */
 export function readLinkedReport(app: { report?: string }): string | null {
   const root = careerOpsRoot();
-  const file = linkedReportPath(app, root);
+  const file = linkedReportPath(app, root, soleMarkdownLinkTarget);
   if (!file) return null;
   try {
     // containedRealpath's check, inline: it reads every resolution failure as

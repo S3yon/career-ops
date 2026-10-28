@@ -48,8 +48,9 @@ function makeRoot(prepare) {
   return dir;
 }
 
-/** The handler's answer, from a child with the alias loader registered. */
-function callRoute(root) {
+/** The handler's answer, from a child with the alias loader registered.
+ *  `env` is laid over the sandbox's blanked overrides. */
+function callRoute(root, env = {}) {
   const driver = join(root, "driver.mjs");
   writeFileSync(driver, DRIVER);
   const out = execFileSync(
@@ -67,6 +68,7 @@ function callRoute(root) {
         // depend on the developer's own files.
         CAREER_OPS_DATA_DIR: "",
         CAREER_OPS_TRACKER: "",
+        ...env,
       },
     },
   );
@@ -191,6 +193,31 @@ test("a linked report that does not exist still reads as URL-unknown", () => {
       "| # | Date | Company | Role | Score | Status | PDF | Report | Notes |",
       "|---|---|---|---|---|---|---|---|---|",
       "| 1 | 2026-10-01 | Acme | Staff Engineer | 4.1/5 | Evaluated | | [1](../reports/001-acme-2026-10-01.md) | |",
+    ].join("\n"));
+    writeFileSync(
+      join(dir, "data", "scan-history.tsv"),
+      `${HISTORY_HEADER}https://boards.greenhouse.io/acme/jobs/2002\t${today}\tgreenhouse\tStaff Engineer\tAcme\tadded\tRemote\n`,
+    );
+  }));
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { offers: [], count: 0 });
+});
+
+test("a Report cell with two links names no posting, so company + role decides", () => {
+  // Which link is the evaluated report is ambiguous, and the core's repair
+  // (fix-report-links.mjs) leaves such a cell for manual review. Reading the
+  // first link would take 001's URL, call the scan row (002's posting) a
+  // second opening, and show a role that was already evaluated.
+  const today = new Date().toISOString().slice(0, 10);
+  const res = callRoute(makeRoot((dir) => {
+    mkdirSync(join(dir, "reports"), { recursive: true });
+    writeFileSync(join(dir, "reports", "001-a.md"), "# Acme\n\n**URL:** https://boards.greenhouse.io/acme/jobs/1001\n");
+    writeFileSync(join(dir, "reports", "002-b.md"), "# Acme\n\n**URL:** https://boards.greenhouse.io/acme/jobs/2002\n");
+    writeFileSync(join(dir, "data", "applications.md"), [
+      "| # | Date | Company | Role | Score | Status | PDF | Report | Notes |",
+      "|---|---|---|---|---|---|---|---|---|",
+      "| 1 | 2026-10-01 | Acme | Staff Engineer | 4.1/5 | Evaluated | | [1](../reports/001-a.md), [2](../reports/002-b.md) | |",
     ].join("\n"));
     writeFileSync(
       join(dir, "data", "scan-history.tsv"),
