@@ -306,6 +306,26 @@ test("a symlinked tracker's report links still resolve from the link's folder", 
   assert.equal(res.body.count, 1);
 });
 
+test("an aggregator posting is told apart by its posting id, from the core", () => {
+  // The route loads the aggregator rule from the core checkout (lib/core/
+  // aggregator-id). uk. and www. are one Indeed board, so two different `jk`
+  // ids there are two postings; by host alone the row would stay hidden.
+  const today = new Date().toISOString().slice(0, 10);
+  const res = callRoute(makeRoot((dir) => {
+    mkdirSync(join(dir, "reports"), { recursive: true });
+    writeFileSync(join(dir, "reports", "001-acme.md"), "# Acme\n\n**URL:** https://uk.indeed.com/viewjob?jk=a\n");
+    writeFileSync(join(dir, "data", "applications.md"), acmeTracker("../reports/001-acme.md"));
+    writeFileSync(
+      join(dir, "data", "scan-history.tsv"),
+      `${HISTORY_HEADER}https://www.indeed.com/viewjob?jk=b\t${today}\tindeed\tStaff Engineer\tAcme\tadded\tRemote\n`,
+    );
+  }));
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.count, 1);
+  assert.equal(res.body.offers[0].url, "https://www.indeed.com/viewjob?jk=b");
+});
+
 process.on("exit", () => {
   for (const dir of roots) rmSync(dir, { recursive: true, force: true });
 });

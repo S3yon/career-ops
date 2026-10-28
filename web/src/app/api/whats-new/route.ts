@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { careerOpsRoot, readApplications, readLinkedReport } from "@/lib/career-ops";
 import { getNormalizeTextKey } from "@/lib/core/text-key";
+import { getAggregatorRule } from "@/lib/core/aggregator-id";
 import { evaluatedKeys, isEvaluated } from "@/lib/whats-new-suppression.mjs";
 import type { DiscoveredOffer } from "@/lib/explore";
 import { collectWhatsNew, resolveOfferLimit } from "@/lib/whats-new.mjs";
@@ -53,15 +54,17 @@ export async function GET(req: Request) {
   // Roles already evaluated → don't resurface as "new". Keyed on company AND
   // role, not company alone: suppressing by employer removed that employer's
   // entire board after one evaluation (#3131), and refined by posting URL when
-  // both sides have one (#5684). See lib/whats-new-suppression.
+  // both sides have one (#5684), by posting id on an aggregator. See
+  // lib/whats-new-suppression.
   const normalizeTextKey = await getNormalizeTextKey();
+  const aggregator = await getAggregatorRule();
   const evaluated = evaluatedKeys(readApplications(), normalizeTextKey, readLinkedReport);
 
   const toOffer = (c: string[]): DiscoveredOffer | null => {
     const [url, firstSeen, portal, title, company, status, location] = c;
     if (!url || !/^https?:\/\//i.test(url)) return null;
     if (status && /skipped|expired/i.test(status)) return null;
-    if (isEvaluated(evaluated, normalizeTextKey, company, title, url)) return null;
+    if (isEvaluated(evaluated, normalizeTextKey, company, title, url, aggregator)) return null;
     return {
       url,
       company: (company || "").trim(),

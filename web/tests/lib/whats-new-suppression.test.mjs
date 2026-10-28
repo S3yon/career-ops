@@ -19,6 +19,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { evaluatedKeys, isEvaluated, suppressionKey } from "../../src/lib/whats-new-suppression.mjs";
 import { normalizeTextKey as norm } from "../../src/lib/core/normalize-text-key.mjs";
+import { aggregatorPostingId, isAggregatorUrl } from "../../../url-key.mjs";
 
 const evaluatedAt = (...pairs) => evaluatedKeys(pairs.map(([company, role]) => ({ company, role })), norm);
 
@@ -256,4 +257,54 @@ test("a language param is read the way the core reads it", () => {
     ["Acme", "Staff Engineer", reportWithUrl("https://acme.recruitee.com/o/staff-engineer-berlin")],
   ]);
   assert.equal(isEvaluated(keys, norm, "Acme", "Staff Engineer", `${PAGE}?lang=de`), true);
+});
+
+// On an aggregator the host and the path say little about the posting: one
+// LinkedIn requisition has a `/comm/` spelling, a slug spelling and a page per
+// language, and one Indeed requisition is listed on `uk.` and `www.`. The
+// core's merge (merge-tracker.mjs, urlDiffers) reads two aggregator URLs as
+// two postings only when both carry a posting id, on one board, and the ids
+// differ. The route injects that rule from the user's own core (lib/core/
+// aggregator-id), so these tests inject the core module itself.
+const aggregator = { isAggregatorUrl, aggregatorPostingId };
+
+test("one aggregator posting under another spelling stays hidden", () => {
+  const cases = [
+    ["https://www.linkedin.com/jobs/view/4001/?lang=de", "https://www.linkedin.com/jobs/view/4001/?lang=fr"],
+    ["https://www.linkedin.com/comm/jobs/view/4001?trackingId=x", "https://www.linkedin.com/jobs/view/4001"],
+    ["https://www.linkedin.com/jobs/view/staff-engineer-at-acme-4001", "https://www.linkedin.com/jobs/view/4001"],
+  ];
+  for (const [evaluated, scanned] of cases) {
+    const { keys } = evaluatedWithReports([["Acme", "Staff Engineer", reportWithUrl(evaluated)]]);
+    assert.equal(isEvaluated(keys, norm, "Acme", "Staff Engineer", scanned, aggregator), true, `${evaluated} vs ${scanned}`);
+  }
+});
+
+test("two aggregator posting ids on one board are two postings", () => {
+  const cases = [
+    ["https://www.linkedin.com/jobs/view/4001", "https://www.linkedin.com/jobs/view/4002"],
+    // A region host is the same board, so the ids decide across it.
+    ["https://uk.indeed.com/viewjob?jk=a", "https://www.indeed.com/viewjob?jk=b"],
+  ];
+  for (const [evaluated, scanned] of cases) {
+    const { keys } = evaluatedWithReports([["Acme", "Staff Engineer", reportWithUrl(evaluated)]]);
+    assert.equal(isEvaluated(keys, norm, "Acme", "Staff Engineer", scanned, aggregator), false, `${evaluated} vs ${scanned}`);
+  }
+});
+
+test("an aggregator URL without a posting id proves nothing", () => {
+  // No id extractor for the board, two boards, or the employer's URL against
+  // a listing: all unknown to the core, so company + role decides.
+  const cases = [
+    ["https://remoteok.com/remote-jobs/123", "https://remoteok.com/remote-jobs/456"],
+    ["https://www.linkedin.com/jobs/view/4001", "https://www.indeed.com/viewjob?jk=b"],
+    [REQ_A, "https://www.linkedin.com/jobs/view/4002"],
+  ];
+  for (const [evaluated, scanned] of cases) {
+    const { keys } = evaluatedWithReports([["Acme", "Staff Engineer", reportWithUrl(evaluated)]]);
+    assert.equal(isEvaluated(keys, norm, "Acme", "Staff Engineer", scanned, aggregator), true, `${evaluated} vs ${scanned}`);
+  }
+  // Employer URLs keep the host + language rule above.
+  const { keys } = evaluatedWithReports([["Acme", "Staff Engineer", reportWithUrl(REQ_A)]]);
+  assert.equal(isEvaluated(keys, norm, "Acme", "Staff Engineer", REQ_B, aggregator), false);
 });

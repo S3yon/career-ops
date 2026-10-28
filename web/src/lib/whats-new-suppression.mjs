@@ -41,6 +41,18 @@
 // bring a row back that company + role would hide, never hide a new one, so
 // what it can get wrong stays on #3131's visible side.
 //
+// AN AGGREGATOR'S POSTING ID IS THE ONE EXCEPTION. On an aggregator the host
+// and the path say little: one LinkedIn requisition has a `/comm/` spelling, a
+// slug spelling and a page per language, and one Indeed requisition is listed
+// on `uk.` and `www.`. So when either URL is on an aggregator, the rule is the
+// core's merge rule (merge-tracker.mjs urlDiffers): two openings only when both
+// URLs carry a posting id, on one board, and the ids differ. Same id, a missing
+// id or two boards prove nothing. The aggregator list is the core's (a shared
+// domains file plus a supplement, CAREER_OPS_AGGREGATOR_DOMAINS overrides it),
+// so the route injects isAggregatorUrl and aggregatorPostingId from the user's
+// own core (lib/core/aggregator-id) instead of this file mirroring them.
+// Without them (an older core) the host rule above stands alone.
+//
 // Reports are read lazily through an injected reader, and only for evaluated
 // rows whose company + role match a scan row, once each. Nothing is read to
 // build the keys.
@@ -82,6 +94,10 @@ export function suppressionKey(norm, company, role) {
 /**
  * @typedef {{url: string, host: string}} PostingId
  * @typedef {{company?: string, role?: string, url?: string, report?: string}} EvaluatedApp
+ * @typedef {{
+ *   isAggregatorUrl: (raw: string) => boolean,
+ *   aggregatorPostingId: (raw: string) => {domain: string, id: string} | null,
+ * }} AggregatorRule
  */
 
 /**
@@ -148,9 +164,11 @@ export function evaluatedKeys(applications, norm, readReport) {
  * @param {string} company - Scan-history company cell.
  * @param {string} title - Scan-history title cell.
  * @param {string} [url] - Scan-history url cell.
+ * @param {AggregatorRule | null} [aggregator] - The core's aggregator rule, or
+ *   null when it could not be loaded (see the header).
  * @returns {boolean}
  */
-export function isEvaluated(keys, norm, company, title, url) {
+export function isEvaluated(keys, norm, company, title, url, aggregator) {
   if (!company || !norm(company, " ")) return false;
   const postings = keys.get(suppressionKey(norm, company, title));
   if (!postings) return false;
@@ -158,8 +176,27 @@ export function isEvaluated(keys, norm, company, title, url) {
   if (!scanned) return true;
   return postings.some((resolve) => {
     const evaluated = resolve();
-    // Only two known URLs on one host, distinct by the core's rule, prove two
+    // Only two known URLs the core's rules call two postings prove two
     // openings. Any other evaluated row hides the scan row.
-    return !evaluated || evaluated.host !== scanned.host || postingUrlRelation(evaluated.url, scanned.url) !== "distinct";
+    return !evaluated || !distinctPostings(evaluated, scanned, aggregator);
   });
+}
+
+/**
+ * Do two known posting URLs name two openings? On an aggregator, only two
+ * posting ids on one board that differ do; elsewhere, two URLs on one host
+ * that postingUrlRelation calls 'distinct'.
+ *
+ * @param {PostingId} a
+ * @param {PostingId} b
+ * @param {AggregatorRule | null | undefined} aggregator
+ * @returns {boolean}
+ */
+function distinctPostings(a, b, aggregator) {
+  if (aggregator && (aggregator.isAggregatorUrl(a.url) || aggregator.isAggregatorUrl(b.url))) {
+    const idA = aggregator.aggregatorPostingId(a.url);
+    const idB = aggregator.aggregatorPostingId(b.url);
+    return Boolean(idA && idB && idA.domain === idB.domain && idA.id !== idB.id);
+  }
+  return a.host === b.host && postingUrlRelation(a.url, b.url) === "distinct";
 }
